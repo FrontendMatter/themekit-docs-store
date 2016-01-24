@@ -1,6 +1,6 @@
 {
   "name": "themekit-docs-store",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Firebase store library for themekit-docs-app.",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
@@ -9,12 +9,13 @@
   },
   "author": "Laza Bogdan <laza.bogdan@macro-net.ro>",
   "license": "ISC",
-  "dependencies": {},
-  "devDependencies": {
-    "babel-cli": "^6.4.5",
-    "babel-preset-es2015": "^6.3.13",
+  "dependencies": {
     "firebase": "^2.3.2",
     "mout": "^0.11.1"
+  },
+  "devDependencies": {
+    "babel-cli": "^6.4.5",
+    "babel-preset-es2015": "^6.3.13"
   },
   "main": "lib/store.js",
   "repository": {
