@@ -1,6 +1,6 @@
 {
   "name": "themekit-docs-store",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Firebase store library for themekit-docs-app.",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
@@ -11,6 +11,7 @@
   "license": "ISC",
   "dependencies": {
     "firebase": "^2.3.2",
+    "firebase-store": "^0.1.0",
     "mout": "^0.11.1"
   },
   "devDependencies": {

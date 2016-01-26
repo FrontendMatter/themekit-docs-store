@@ -1,7 +1,7 @@
 import merge from 'mout/object/merge'
 import camelCase from 'mout/string/camelCase'
-import Store from './firebase-store'
-import Paginator from './firebase-paginator'
+import Store from 'firebase-store'
+import Paginator from 'firebase-store/lib/firebase-paginator'
 
 /**
  * ComponentStore Firebase Service.
