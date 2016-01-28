@@ -360,6 +360,28 @@ class ComponentStore extends Store {
 	}
 
 	///////////
+	// DEMOS //
+	///////////
+	
+	componentDemosRef (componentId) {
+		return this.getRef(`component_demos/${ componentId }`)
+	}
+
+	getComponentDemos (componentId) {
+		return this.get(this.componentDemosRef(componentId)).then((snapshot) => {
+			const demos = []
+			if (snapshot.exists()) {
+				const results = snapshot.val()
+				for (let key in results) {
+					const demo = results[key]
+					demos.push(demo)
+				}
+			}
+			return demos
+		})
+	}
+
+	///////////
 	// PAGES //
 	///////////
 	
