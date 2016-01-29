@@ -22,13 +22,17 @@ class ComponentStore extends Store {
 		this.paginator = {}
 
 		/**
-		 * Package <> Component relationship
+		 * Component relationships
 		 */
 		this.on('component.added', (componentName, data) => {
+			// Package <> Component relationship
 			this.setPackageComponent(data.packageId, componentName, true)
 		})
 		this.on('component.removed', (componentName, data) => {
-			this.setPackageComponent(data.packageId, componentName, null)
+			// Package <> Component relationship
+			this.removePackageComponent(data.packageId, componentName)
+			// Component <> Demo relationship
+			this.remove(this.componentDemosRef(componentName))
 		})
 
 		/**
@@ -82,8 +86,8 @@ class ComponentStore extends Store {
 		.then((packages) => {
 			let queue = []
 			packages.map((pkg) => {
-				queue.push(this.getPackageComponents(pkg.name).then((components) => {
-					pkg.components = components.length
+				queue.push(this.getPackageComponentsCount(pkg.name).then((count) => {
+					pkg.components = count
 				}))
 			})
 			return Promise.all(queue).then(() => packages)
@@ -109,6 +113,15 @@ class ComponentStore extends Store {
 	 */
 	setPackageComponent (packageName, componentName, data) {
 		return this.set(`package_components/${ packageName }/${ componentName }`, data)
+	}
+
+	/**
+	 * Remove Package <> Component relationship
+	 * @param {string} packageName   	The package name.
+	 * @param {string} componentName 	The component name.
+	 */
+	removePackageComponent (packageName, componentName) {
+		return this.setPackageComponent(packageName, componentName, null)
 	}
 
 	onPackageAdded (cb, error) {
@@ -198,6 +211,20 @@ class ComponentStore extends Store {
 	 */
 	removeComponent (name, sync) {
 		return this.setComponent(name, null, sync)
+	}
+
+	/**
+	 * Get the number of components for a package from Firebase.
+	 * @return {Promise} A Promise which resolves a Number.
+	 */
+	getPackageComponentsCount (packageName) {
+		return this.get(this.getPackageComponentsRef(packageName)).then((snapshot) => {
+			if (!snapshot.exists()) {
+				return Promise.resolve(0)
+			}
+			const componentIds = Object.keys(snapshot.val())
+			return componentIds.length
+		})
 	}
 
 	/**
