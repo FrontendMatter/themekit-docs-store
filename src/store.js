@@ -36,17 +36,104 @@ class ComponentStore extends Store {
 		})
 
 		/**
-		 * Package <> Page relationship
+		 * Page relationships
 		 */
 		this.on('page.added', (pageId, page) => {
+			// Package <> Page relationship
 			this.setPackagePage(page.packageId, pageId, true)
 		})
 		this.on('page.removed', (pageId, page) => {
-			this.setPackagePage(page.packageId, pageId, null)
+			// Package <> Page relationship
+			this.removePackagePage(page.packageId, pageId)
+		})
+
+		/**
+		 * Package relationships
+		 */
+		this.on('package.removed', (packageId, pkg) => {
+			// Components
+			this.removePackageComponents(packageId)
+			// Pages
+			this.removePages(packageId)
 		})
 	}
 
 	/*eslint spaced-comment:0*/
+	////////////////
+	// PAGINATION //
+	////////////////
+
+	/**
+	 * Create a paginator.
+	 */
+	paginate (id, ref, limit = 6) {
+		this.paginator[id] = new Paginator(ref, limit)
+	}
+
+	/**
+	 * Get paginator results.
+	 * @param {string} id 		The paginator ID.
+	 * @param {string} type 	Page type ('prevPage' or 'nextPage')
+	 * @return {Array} 			The results.
+	 */
+	getPaginatorResults (id, type) {
+		this.emit('serviceLoading')
+		let page
+		try {
+			page = this.paginator[id][type]()
+		}
+		catch (e) {
+			this.emit('serviceError', e)
+			return Promise.reject(e)
+		}
+		if (!page) {
+			return Promise.resolve([])
+		}
+		return this.get(page.ref).then((snapshot) => {
+			this.emit('serviceLoading')
+			return page.cb(snapshot)
+		})
+	}
+
+	/**
+	 * Get paginator results call function.
+	 * @param {string} id 	The paginator ID.
+	 * @return {Array} 		The results.
+	 */
+	getPaginatorResultsCall (id) {
+		let inst = this[camelCase(`get-paginator-${ id }`)]
+		if (typeof inst !== 'function') {
+			return false
+		}
+		return inst.bind(this)
+	}
+
+	/**
+	 * Get paginator results for the next page.
+	 * @param {string} id 	The paginator ID.
+	 * @return {Array} 		The results.
+	 */
+	nextPage (id) {
+		const inst = this.getPaginatorResultsCall(id)
+		if (!inst) {
+			return Promise.reject(`invalid paginator results call ${ id }`)
+		}
+		return inst('nextPage')
+	}
+
+	/**
+	 * Get paginator results for the previous page.
+	 * @param {string} id 	The paginator ID.
+	 * @return {Array} 		The results.
+	 */
+	prevPage (id) {
+		const inst = this.getPaginatorResultsCall(id)
+		if (!inst) {
+			return Promise.reject(`invalid paginator results call ${ id }`)
+		}
+		return inst('prevPage')
+	}
+
 	//////////////
 	// PACKAGES //
 	//////////////
@@ -58,7 +145,17 @@ class ComponentStore extends Store {
 	 * @return {Promise} 		A Promise.
 	 */
 	setPackage (name, data) {
-		return this.set(`packages/${ name }`, data)
+		const path = `packages/${ name }`
+		if (!data) {
+			return this.getPackage(name).then((pkg) => {
+				return this.set(path, data).then(() => {
+					this.emit('package.removed', name, pkg)
+				})
+			})
+		}
+		return this.set(path, data).then(() => {
+			this.emit('package.added', name, data)
+		})
 	}
 
 	/**
@@ -112,7 +209,7 @@ class ComponentStore extends Store {
 	 * @param {boolean|null} data 		The data (boolean or null to remove)
 	 */
 	setPackageComponent (packageName, componentName, data) {
-		return this.set(`package_components/${ packageName }/${ componentName }`, data)
+		return this.set(this.getPackageComponentsRef(packageName).child(componentName), data)
 	}
 
 	/**
@@ -206,11 +303,13 @@ class ComponentStore extends Store {
 	/**
 	 * Removes a component from Firebase.
 	 * @param  {string} name 	The component name.
-	 * @param {boolean} sync 	Use the sync index.
 	 * @return {Promise} 		A Promise.
 	 */
-	removeComponent (name, sync) {
-		return this.setComponent(name, null, sync)
+	removeComponent (name) {
+		return Promise.all([
+			this.setComponent(name, null),
+			this.setComponent(name, null, true)
+		])
 	}
 
 	/**
@@ -244,6 +343,28 @@ class ComponentStore extends Store {
 		.then((results) => {
 			this.emit('serviceComplete')
 			return results
+		})
+		.catch((e) => {
+			this.emit('serviceError', e)
+		})
+	}
+
+	/**
+	 * Remove the components belonging to a package from Firebase.
+	 * @return {Promise} A Promise.
+	 */
+	removePackageComponents (packageName) {
+		return this.get(this.getPackageComponentsRef(packageName)).then((snapshot) => {
+			if (!snapshot.exists()) {
+				return Promise.resolve()
+			}
+			const componentIds = Object.keys(snapshot.val())
+			const removeComponents = componentIds.map((componentId) => this.removeComponent(componentId))
+			this.emit('serviceLoading')
+			return Promise.all(removeComponents)
+		})
+		.then(() => {
+			this.emit('serviceComplete')
 		})
 		.catch((e) => {
 			this.emit('serviceError', e)
@@ -472,43 +593,11 @@ class ComponentStore extends Store {
 	}
 
 	/**
-	 * Create a paginator.
-	 */
-	paginate (id, ref, limit = 6) {
-		this.paginator[id] = new Paginator(ref, limit)
-	}
-
-	/**
 	 * Create a Pages paginator
 	 * @param  {string} packageName The package name.
 	 */
 	paginatePages (packageName) {
 		this.paginate('pages', this.getPackagePagesRef(packageName))
-	}
-
-	/**
-	 * Get paginator results.
-	 * @param {string} id 		The paginator ID.
-	 * @param {string} type 	Page type ('prevPage' or 'nextPage')
-	 * @return {Array} 			The results.
-	 */
-	getPaginatorResults (id, type) {
-		this.emit('serviceLoading')
-		let page
-		try {
-			page = this.paginator[id][type]()
-		}
-		catch (e) {
-			this.emit('serviceError', e)
-			return Promise.reject(e)
-		}
-		if (!page) {
-			return Promise.resolve([])
-		}
-		return this.get(page.ref).then((snapshot) => {
-			this.emit('serviceLoading')
-			return page.cb(snapshot)
-		})
 	}
 
 	/**
@@ -531,45 +620,6 @@ class ComponentStore extends Store {
 	}
 
 	/**
-	 * Get paginator results call function.
-	 * @param {string} id 	The paginator ID.
-	 * @return {Array} 		The results.
-	 */
-	getPaginatorResultsCall (id) {
-		let inst = this[camelCase(`get-paginator-${ id }`)]
-		if (typeof inst !== 'function') {
-			return false
-		}
-		return inst.bind(this)
-	}
-
-	/**
-	 * Get paginator results for the next page.
-	 * @param {string} id 	The paginator ID.
-	 * @return {Array} 		The results.
-	 */
-	nextPage (id) {
-		const inst = this.getPaginatorResultsCall(id)
-		if (!inst) {
-			return Promise.reject(`invalid paginator results call ${ id }`)
-		}
-		return inst('nextPage')
-	}
-
-	/**
-	 * Get paginator results for the previous page.
-	 * @param {string} id 	The paginator ID.
-	 * @return {Array} 		The results.
-	 */
-	prevPage (id) {
-		const inst = this.getPaginatorResultsCall(id)
-		if (!inst) {
-			return Promise.reject(`invalid paginator results call ${ id }`)
-		}
-		return inst('prevPage')
-	}
-
-	/**
 	 * Get pages from Firebase for a specific package.
 	 * @return {Promise} A Promise which resolves a pages Array.
 	 */
@@ -581,6 +631,17 @@ class ComponentStore extends Store {
 	}
 
 	/**
+	 * Remove pages from Firebase for a specific package.
+	 * @return {Promise} A Promise.
+	 */
+	removePages (packageName) {
+		return this.get(this.getPackagePagesRef(packageName)).then((snapshot) => {
+			let pageIds = Object.keys(snapshot.val())
+			return Promise.all(pageIds.map((pageId) => this.removePage(pageId)))
+		})
+	}
+
+	/**
 	 * Package pages relationship
 	 * @param {string} packageName   	The package name.
 	 * @param {string} pageId 			The page ID.
@@ -588,6 +649,15 @@ class ComponentStore extends Store {
 	 */
 	setPackagePage (packageName, pageId, data) {
 		return this.set(`package_pages/${ packageName }/${ pageId }`, data)
+	}
+
+	/**
+	 * Remove Package <> Page relationship
+	 * @param {string} packageName   	The package name.
+	 * @param {string} pageId 			The page ID.
+	 */
+	removePackagePage (packageName, pageId) {
+		return this.setPackagePage(packageName, pageId, null)
 	}
 
 	onPageRemoved (cb, error) {
