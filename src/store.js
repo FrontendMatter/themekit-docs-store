@@ -1,5 +1,6 @@
 import merge from 'mout/object/merge'
 import camelCase from 'mout/string/camelCase'
+import slugify from 'mout/string/slugify'
 import Store from 'firebase-store'
 import Paginator from 'firebase-store/lib/firebase-paginator'
 
@@ -24,37 +25,37 @@ class ComponentStore extends Store {
 		/**
 		 * Component relationships
 		 */
-		this.on('component.added', (componentId, data) => {
+		this.on('component.added', (objectId, data) => {
 			// Package <> Component relationship
-			this.setPackageComponent(data.packageId, componentId, true)
+			this.setPackageComponent(data.packageId, data.version, objectId, true)
 		})
-		this.on('component.removed', (componentId, data) => {
+		this.on('component.removed', (objectId, data) => {
 			// Package <> Component relationship
-			this.removePackageComponent(data.packageId, componentId)
+			this.removePackageComponent(data.packageId, data.version, objectId)
 			// Component <> Demo relationship
-			this.remove(this.componentDemosRef(componentId))
+			this.remove(this.componentDemosRef(objectId, data.version))
 		})
 
 		/**
 		 * Page relationships
 		 */
-		this.on('page.added', (pageId, page) => {
+		this.on('page.added', (objectId, data) => {
 			// Package <> Page relationship
-			this.setPackagePage(page.packageId, pageId, true)
+			this.setPackagePage(data.packageId, data.version, objectId, true)
 		})
-		this.on('page.removed', (pageId, page) => {
+		this.on('page.removed', (objectId, data) => {
 			// Package <> Page relationship
-			this.removePackagePage(page.packageId, pageId)
+			this.removePackagePage(data.packageId, data.version, objectId)
 		})
 
 		/**
 		 * Package relationships
 		 */
-		this.on('package.removed', (packageId, pkg) => {
+		this.on('package.removed', (packageId, data) => {
 			// Components
-			this.removePackageComponents(packageId)
+			this.removePackageComponents(packageId, data.version)
 			// Pages
-			this.removePages(packageId)
+			this.removePages(packageId, data.version)
 		})
 	}
 
@@ -114,11 +115,12 @@ class ComponentStore extends Store {
 	 * @return {Array} 		The results.
 	 */
 	nextPage (id) {
+		const args = [].slice.call(arguments, 1)
 		const inst = this.getPaginatorResultsCall(id)
 		if (!inst) {
 			return Promise.reject(`invalid paginator results call ${ id }`)
 		}
-		return inst('nextPage')
+		return inst.apply(inst, ['nextPage'].concat(args))
 	}
 
 	/**
@@ -137,52 +139,64 @@ class ComponentStore extends Store {
 	//////////////
 	// PACKAGES //
 	//////////////
-
+	
+	version (version) {
+		return slugify(version)
+	}
+ 
 	/**
 	 * Saves package data to Firebase.
 	 * @param {string} packageId 	The package ID.
 	 * @param {?} data 				The data (null to remove the package).
 	 * @return {Promise} 			A Promise.
 	 */
-	setPackage (packageId, data) {
+	setPackage (packageId, data, version = 'latest') {
 		let path = this.getRef('packages')
 		if (packageId) {
 			path = path.child(packageId)
 		}
 		else {
 			path = path.push()
+			packageId = path.key()
 		}
+		path = path.child(this.version(version))
 		if (!data) {
-			return this.getPackage(packageId).then((pkg) => {
+			return this.getPackage(packageId, version).then((pkg) => {
 				return this.set(path, data).then(() => {
 					this.emit('package.removed', packageId, pkg)
 				})
 			})
 		}
-		return this.set(path, data).then(() => {
+		return this.set(path, data, packageId).then(() => {
 			this.emit('package.added', packageId, data)
+			return packageId
 		})
 	}
 
 	/**
 	 * Removes a package from Firebase.
 	 * @param  {string} packageId 	The package ID.
+	 * @param  {String} version 	The package version.
 	 * @return {Promise} 			A Promise.
 	 */
-	removePackage (packageId) {
-		return this.setPackage(packageId, null)
+	removePackage (packageId, version = 'latest') {
+		return this.setPackage(packageId, null, version)
 	}
 
 	/**
 	 * Get packages from Firebase.
+	 * @param {string} version The version.
 	 * @return {Promise} A Promise which resolves a packages Array.
 	 */
-	getPackages () {
+	getPackages (version = 'latest') {
+		version = this.version(version)
 		return this.get('packages').then((snapshot) => {
-			const packages = this.snapshotArray(snapshot)
+			let packages = this.snapshotArray(snapshot)
 			let queue = []
+			packages = packages.filter((pkg) => pkg[version] !== undefined)
+			packages = packages.map((pkg) => pkg[version])
 			packages.map((pkg) => {
-				queue.push(this.getPackageComponentsCount(pkg.objectId).then((count) => {
+				queue.push(this.getPackageComponentsCount(pkg.objectId, version).then((count) => {
 					pkg.components = count
 				}))
 			})
@@ -195,10 +209,23 @@ class ComponentStore extends Store {
 	 * @param {string} packageId 	The package ID.
 	 * @return {Promise} 			A Promise which resolves a package Object.
 	 */
-	getPackage (packageId) {
-		return this.get(`packages/${ packageId }`).then((snapshot) => {
+	getPackage (packageId, version = 'latest') {
+		const path = this.getRef(`packages/${ packageId }/${ this.version(version) }`)
+		return this.get(path).then((snapshot) => {
+			if (version !== 'latest' && !snapshot.exists()) {
+				return this.getPackage(packageId)
+			}
 			return snapshot.val()
 		})
+	}
+
+	/**
+	 * Get all package versions from Firebase.
+	 * @param  {String} packageId 	The package ID.
+	 * @return {Promise}           	A Promise which resolves a packages Array
+	 */
+	getPackageVersions (packageId) {
+		return this.get(this.getRef(`packages/${ packageId }`)).then((snapshot) => this.snapshotArray(snapshot))
 	}
 
 	/**
@@ -207,8 +234,8 @@ class ComponentStore extends Store {
 	 * @param {string} componentId 		The component ID.
 	 * @param {boolean|null} data 		The data (boolean or null to remove)
 	 */
-	setPackageComponent (packageId, componentId, data) {
-		return this.set(this.getPackageComponentsRef(packageId).child(componentId), data)
+	setPackageComponent (packageId, version = 'latest', componentId, data) {
+		return this.set(this.getPackageComponentsRef(packageId).child(`${ componentId }/${ this.version(version) }`), data)
 	}
 
 	/**
@@ -216,13 +243,16 @@ class ComponentStore extends Store {
 	 * @param {string} packageId   		The package ID.
 	 * @param {string} componentId 		The component ID.
 	 */
-	removePackageComponent (packageId, componentId) {
-		return this.setPackageComponent(packageId, componentId, null)
+	removePackageComponent (packageId, version = 'latest', componentId) {
+		return this.setPackageComponent(packageId, version, componentId, null)
 	}
 
-	onPackageAdded (cb, error) {
+	onPackageAdded (cb, error, version = 'latest') {
 		this.getOn('packages', 'child_added', (snapshot) => {
-			cb(snapshot.val())
+			let pkg = snapshot.val()
+			if (pkg[version]) {
+				cb(pkg[version])
+			}
 		}, error)
 	}
 
@@ -260,19 +290,20 @@ class ComponentStore extends Store {
 
 	/**
 	 * Get the Firebase path for fetching a component.
-	 * @param {string} componentId 	The component ID.
-	 * @param  {boolean} sync 		Use the sync index.
-	 * @return {string} 			A Firebase path.
+	 * @param  {string} componentId 	The component ID.
+	 * @param  {string} version 		The package version.
+	 * @param  {boolean} sync 			Use the sync index.
+	 * @return {string} 				A Firebase path.
 	 */
-	getComponentPath (componentId, sync) {
-		return `${ this.getComponentsPath(sync) }/${ componentId }`
+	getComponentPath (componentId, version = 'latest', sync) {
+		return `${ this.getComponentsPath(sync) }/${ componentId }/${ this.version(version) }`
 	}
 
 	/**
 	 * Get a Firebase query reference for fetching a component.
-	 * @param {string} componentId 	The component ID.
-	 * @param  {boolean} sync 		Use the sync index.
-	 * @return {Firebase} 			A Firebase reference.
+	 * @param  {string} componentId 	The component ID.
+	 * @param  {boolean} sync 			Use the sync index.
+	 * @return {Firebase} 				A Firebase reference.
 	 */
 	getComponentRef (componentId, sync) {
 		return this.getComponentsRef(sync).child(componentId)
@@ -280,85 +311,105 @@ class ComponentStore extends Store {
 
 	/**
 	 * Saves component data to Firebase.
-	 * @param {string} componentId 	The component ID.
-	 * @param {?} data 				The data (null to remove the component).
-	 * @param {boolean} sync 		Use the sync index.
-	 * @return {Promise} 			A Promise.
+	 * @param  {string} componentId 	The component ID.
+	 * @param  {?} data 				The data (null to remove the component).
+	 * @param  {string} version 		The package version.
+	 * @param  {boolean} sync 			Use the sync index.
+	 * @return {Promise} 				A Promise.
 	 */
-	setComponent (componentId, data, sync) {
+	setComponent (componentId, data, version = 'latest', sync) {
+		version = this.version(version)
 		if (!componentId) {
 			const ref = this.getComponentsRef(sync).push()
 			componentId = ref.key()
 		}
-		const path = this.getComponentPath(componentId, sync)
+		const path = this.getComponentPath(componentId, version, sync)
 		if (!data) {
-			return this.getComponent(componentId).then(({ component }) => {
+			return this.getComponent(componentId, version).then(({ merge }) => {
 				return this.set(path, data).then(() => {
-					this.emit('component.removed', componentId, component)
+					this.emit('component.removed', componentId, merge)
 				})
 			})
 		}
-		return this.set(path, data).then((objectId) => {
+		return this.set(path, data, componentId).then(() => {
 			this.emit('component.added', componentId, data)
-			return objectId
+			return componentId
 		})
 	}
 
 	/**
 	 * Removes a component from Firebase.
 	 * @param  {string} componentId 	The component ID.
+	 * @param  {string} version 		The package version.
 	 * @return {Promise} 				A Promise.
 	 */
-	removeComponent (componentId) {
+	removeComponent (componentId, version = 'latest') {
 		return Promise.all([
-			this.setComponent(componentId, null),
-			this.setComponent(componentId, null, true)
+			this.setComponent(componentId, null, version),
+			this.setComponent(componentId, null, version, true)
 		])
 	}
 
 	/**
-	 * Get the number of components for a package from Firebase.
-	 * @param {string} packageId 	The package ID.
+	 * Get the component IDs for a package from Firebase.
+	 * @param  {string} packageId 	The package ID.
+	 * @param  {string} version 	The package version.
 	 * @return {Promise} 			A Promise which resolves a Number.
 	 */
-	getPackageComponentsCount (packageId) {
+	getPackageComponentsIds (packageId, version = 'latest') {
+		version = this.version(version)
 		return this.get(this.getPackageComponentsRef(packageId)).then((snapshot) => {
 			if (!snapshot.exists()) {
-				return Promise.resolve(0)
+				return Promise.resolve([])
 			}
-			const componentIds = Object.keys(snapshot.val())
-			return componentIds.length
+			let componentIds = []
+			let components = snapshot.val()
+			for (let componentId in components) {
+				if (components[componentId].hasOwnProperty(version)) {
+					componentIds.push(componentId)
+				}
+			}
+			return componentIds
+		})
+	}
+
+	/**
+	 * Get the number of components for a package from Firebase.
+	 * @param  {string} packageId 	The package ID.
+	 * @param  {string} version 	The package version.
+	 * @return {Promise} 			A Promise which resolves a Number.
+	 */
+	getPackageComponentsCount (packageId, version = 'latest') {
+		version = this.version(version)
+		return this.getPackageComponentsIds(packageId, version).then((ids) => {
+			return ids.length
 		})
 	}
 
 	/**
 	 * Get the components for a package from Firebase.
-	 * @param {string} packageId	The package ID.
+	 * @param  {string} packageId	The package ID.
+	 * @param  {string} version 	The package version.
 	 * @return {Promise} 			A Promise which resolves a components Array.
 	 */
-	getPackageComponents (packageId) {
-		return this.get(this.getPackageComponentsRef(packageId)).then((snapshot) => {
-			if (!snapshot.exists()) {
-				return Promise.resolve([])
-			}
-			const componentIds = Object.keys(snapshot.val())
-			const components = componentIds.map((componentId) => this.getComponent(componentId))
+	getPackageComponents (packageId, version = 'latest') {
+		version = this.version(version)
+		return this.getPackageComponentsIds(packageId, version).then((componentIds) => {
+			const components = componentIds.map((id) => this.getComponent(id, version))
 			return Promise.all(components)
 		})
 	}
 
 	/**
 	 * Remove the components belonging to a package from Firebase.
-	 * @param {string} packageId	The package ID.
+	 * @param  {string} packageId	The package ID.
+	 * @param  {string} version 	The package version.
 	 * @return {Promise} 			A Promise.
 	 */
-	removePackageComponents (packageId) {
-		return this.get(this.getPackageComponentsRef(packageId)).then((snapshot) => {
-			if (!snapshot.exists()) {
-				return Promise.resolve()
-			}
-			const componentIds = Object.keys(snapshot.val())
-			const removeComponents = componentIds.map((componentId) => this.removeComponent(componentId))
+	removePackageComponents (packageId, version = 'latest') {
+		version = this.version(version)
+		return this.getPackageComponentsIds(packageId, version).then((componentIds) => {
+			const removeComponents = componentIds.map((componentId) => this.removeComponent(componentId, version))
 			return Promise.all(removeComponents)
 		})
 	}
@@ -375,26 +426,25 @@ class ComponentStore extends Store {
 	/**
 	 * Get a component.
 	 * @param  {Firebase} componentId 	The component ID.
+	 * @param  {string} version 		The package version.
 	 * @return {Promise} 				A Promise which resolves an Array of indexes.
 	 */
-	getComponent (componentId) {
+	getComponent (componentId, version = 'latest') {
+		version = this.version(version)
 		this.emit('serviceLoading')
 		return Promise.all([
-			this.getComponentValue(componentId),
-			this.getComponentValue(componentId, true)
+			this.getComponentValue(componentId, version),
+			this.getComponentValue(componentId, version, true)
 		])
 		.then((values) => {
 			return Promise.all(
-				values.map((component) => this.syncComponentIndex(component.data, !component.sync))
+				values.filter((component) => component.data).map((component) => {
+					return this.syncComponentIndex(component.data, version, !component.sync)
+				})
 			)
 		})
 		.then((indexes) => {
 			let componentData = null
-			for (let i = 0; i <= indexes.length; i++) {
-				if (!indexes[i]) {
-					indexes.splice(i, 1)
-				}
-			}
 			indexes.forEach((data) => {
 				componentData = data
 			})
@@ -407,11 +457,16 @@ class ComponentStore extends Store {
 	/**
 	 * Get a component data
 	 * @param  {string} componentId 	The component ID.
+	 * @param  {string} version 		The package version.
 	 * @param  {boolean} sync 			Use the 'sync' index.
 	 * @return {Promise}      			A Promise which resolves an Object containing the component data and the 'sync' param value
 	 */
-	getComponentValue (componentId, sync) {
-		return this.get(this.getComponentPath(componentId, sync)).then((snapshot) => {
+	getComponentValue (componentId, version = 'latest', sync) {
+		version = this.version(version)
+		return this.get(this.getComponentPath(componentId, version, sync)).then((snapshot) => {
+			if (version !== 'latest' && !snapshot.exists()) {
+				return this.getComponentValue(componentId, 'latest', sync)
+			}
 			return {
 				data: snapshot.val(),
 				sync: sync
@@ -422,14 +477,15 @@ class ComponentStore extends Store {
 	/**
 	 * Get the 'sync' or 'components' index for a component.
 	 * @param  {Object} component 	The component.
+	 * @param  {string} version 	The package version.
 	 * @param  {boolean} sync 		Enable to get the 'sync' index when the component Object comes from the 'components' index
 	 * @return {Promise} 			A Promise which resolves the index Object.
 	 */
-	syncComponentIndex (component, sync) {
+	syncComponentIndex (component, version = 'latest', sync) {
 		if (!component) {
 			return Promise.resolve()
 		}
-		return this.get(this.getComponentPath(component.objectId, sync)).then((snapshot) => {
+		return this.get(this.getComponentPath(component.objectId, version, sync)).then((snapshot) => {
 			if (!snapshot.exists()) {
 				if (sync) {
 					return { 
@@ -501,12 +557,24 @@ class ComponentStore extends Store {
 	// DEMOS //
 	///////////
 	
-	componentDemosRef (componentId) {
-		return this.getRef(`component_demos/${ componentId }`)
+	/**
+	 * Compute a Firebase reference for a component demos
+	 * @param  {String} componentId 	The component ID.
+	 * @param  {String} version     	The package version.
+	 * @return {Firebase}            	A Firebase reference.
+	 */
+	componentDemosRef (componentId, version = 'latest') {
+		return this.getRef(`component_demos/${ componentId }/${ this.version(version) }`)
 	}
 
-	getComponentDemos (componentId) {
-		return this.get(this.componentDemosRef(componentId)).then((snapshot) => this.snapshotArray(snapshot))
+	/**
+	 * Get component demos from Firebase.
+	 * @param  {String} componentId 	The component ID.
+	 * @param  {String} version     	The package version.
+	 * @return {Promise}             	A Promise resolving the demos Array
+	 */
+	getComponentDemos (componentId, version = 'latest') {
+		return this.get(this.componentDemosRef(componentId, version)).then((snapshot) => this.snapshotArray(snapshot))
 	}
 
 	///////////
@@ -515,11 +583,12 @@ class ComponentStore extends Store {
 	
 	/**
 	 * Saves a page to Firebase.
-	 * @param {?} data 			The data (null to remove the package).
-	 * @param {string} pageId 	The page ID.
-	 * @return {Promise} 		A Promise.
+	 * @param  {?} data 			The data (null to remove the package).
+	 * @param  {string} pageId 		The page ID.
+	 * @param  {string} version 	The package version.
+	 * @return {Promise} 			A Promise.
 	 */
-	setPage (pageId, data) {
+	setPage (pageId, data, version = 'latest') {
 		let ref = this.getRef('pages')
 		if (pageId) {
 			ref = ref.child(pageId)
@@ -528,36 +597,45 @@ class ComponentStore extends Store {
 			ref = ref.push()
 			pageId = ref.key()
 		}
+		version = this.version(version)
+		ref = ref.child(version)
 
 		if (!data) {
-			return this.getPage(pageId).then((page) => {
+			return this.getPage(pageId, version).then((page) => {
 				return this.set(ref, data).then(() => {
 					this.emit('page.removed', pageId, page)
 				})
 			})
 		}
-		return this.set(ref, data).then((objectId) => {
+		return this.set(ref, data, pageId).then(() => {
 			this.emit('page.added', pageId, data)
-			return objectId
+			return pageId
 		})
 	}
 
 	/**
 	 * Removes a page from Firebase.
-	 * @param  {string} pageId 	The page ID.
-	 * @return {Promise} 		A Promise.
+	 * @param  {string} pageId 		The page ID.
+	 * @param  {string} version 	The package version.
+	 * @return {Promise} 			A Promise.
 	 */
-	removePage (pageId) {
-		return this.setPage(null, pageId)
+	removePage (pageId, version = 'latest') {
+		return this.setPage(pageId, null, version)
 	}
 
 	/**
 	 * Get a page from Firebase.
-	 * @param {string} pageId 	The page ID.
-	 * @return {Promise} 		A Promise which resolves a page Object.
+	 * @param  {string} pageId 		The page ID.
+	 * @param  {string} version 	The package version.
+	 * @return {Promise} 			A Promise which resolves a page Object.
 	 */
-	getPage (pageId) {
-		return this.get(`pages/${ pageId }`).then((snapshot) => {
+	getPage (pageId, version = 'latest') {
+		version = this.version(version)
+		const path = this.getRef(`pages/${ pageId }/${ version }`)
+		return this.get(path).then((snapshot) => {
+			if (version !== 'latest' && !snapshot.exists()) {
+				return this.getPage(pageId)
+			}
 			return snapshot.val()
 		})
 	}
@@ -565,18 +643,20 @@ class ComponentStore extends Store {
 	/**
 	 * Get a Firebase query reference for fetching pages for a specific package.
 	 * @param  {string} packageId		The package ID.
+	 * @param  {string} version 		The package version.
 	 * @return {Firebase} 				A Firebase reference.
 	 */
-	getPackagePagesRef (packageId) {
-		return this.getRef(`package_pages/${ packageId }`)
+	getPackagePagesRef (packageId, version = 'latest') {
+		return this.getRef(`package_pages/${ packageId }/${ this.version(version) }`)
 	}
 
 	/**
 	 * Create a Pages paginator
-	 * @param  {string} packageId The package ID.
+	 * @param  {string} packageId 	The package ID.
+	 * @param  {string} version 	The package version.
 	 */
-	paginatePages (packageId) {
-		this.paginate('pages', this.getPackagePagesRef(packageId))
+	paginatePages (packageId, version = 'latest') {
+		this.paginate('pages', this.getPackagePagesRef(packageId, version))
 	}
 
 	/**
@@ -584,41 +664,36 @@ class ComponentStore extends Store {
 	 * @param {string} type 	Page type ('prevPage' or 'nextPage')
 	 * @return {Array} 			The results.
 	 */
-	getPaginatorPages (type) {
+	getPaginatorPages (type, version = 'latest') {
 		return this.getPaginatorResults('pages', type).then((pageIds) => {
 			pageIds = Object.keys(pageIds)
-			return Promise.all(pageIds.map((pageId) => this.getPage(pageId)))
-		})
-		.then((result) => {
-			this.emit('serviceComplete')
-			return result
-		})
-		.catch((e) => {
-			this.emit('serviceError', e)
+			return Promise.all(pageIds.map((pageId) => this.getPage(pageId, version)))
 		})
 	}
 
 	/**
 	 * Get pages from Firebase for a specific package.
 	 * @param {string} packageId 	The package ID.
+	 * @param  {string} version 	The package version.
 	 * @return {Promise} 			A Promise which resolves a pages Array.
 	 */
-	getPages (packageId) {
-		return this.get(this.getPackagePagesRef(packageId)).then((snapshot) => {
+	getPages (packageId, version = 'latest') {
+		return this.get(this.getPackagePagesRef(packageId, version)).then((snapshot) => {
 			let pageIds = Object.keys(snapshot.val())
-			return Promise.all(pageIds.map((pageId) => this.getPage(pageId)))
+			return Promise.all(pageIds.map((pageId) => this.getPage(pageId, version)))
 		})
 	}
 
 	/**
 	 * Remove pages from Firebase for a specific package.
 	 * @param {string} packageId 	The package ID.
+	 * @param  {string} version 	The package version.
 	 * @return {Promise} 			A Promise.
 	 */
-	removePages (packageId) {
-		return this.get(this.getPackagePagesRef(packageId)).then((snapshot) => {
+	removePages (packageId, version = 'latest') {
+		return this.get(this.getPackagePagesRef(packageId, version)).then((snapshot) => {
 			let pageIds = Object.keys(snapshot.val())
-			return Promise.all(pageIds.map((pageId) => this.removePage(pageId)))
+			return Promise.all(pageIds.map((pageId) => this.removePage(pageId, version)))
 		})
 	}
 
@@ -628,17 +703,18 @@ class ComponentStore extends Store {
 	 * @param {string} pageId 		The page ID.
 	 * @param {boolean|null} data 	The data (boolean or null to remove)
 	 */
-	setPackagePage (packageId, pageId, data) {
-		return this.set(`package_pages/${ packageId }/${ pageId }`, data)
+	setPackagePage (packageId, version = 'latest', pageId, data) {
+		return this.set(this.getPackagePagesRef(packageId, version).child(pageId), data)
 	}
 
 	/**
 	 * Remove Package <> Page relationship
 	 * @param {string} packageId   	The package ID.
+	 * @param  {string} version 	The package version.
 	 * @param {string} pageId 		The page ID.
 	 */
-	removePackagePage (packageId, pageId) {
-		return this.setPackagePage(packageId, pageId, null)
+	removePackagePage (packageId, version = 'latest', pageId) {
+		return this.setPackagePage(packageId, version, pageId, null)
 	}
 
 	onPageRemoved (cb, error) {
