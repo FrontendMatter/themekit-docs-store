@@ -1,5 +1,4 @@
 import FirebaseStore from 'firebase-store'
-import Paginator from 'firebase-store/lib/firebase-paginator'
 import merge from 'mout/object/merge'
 import forOwn from 'mout/object/forOwn'
 import camelCase from 'mout/string/camelCase'
@@ -16,91 +15,9 @@ class Store extends FirebaseStore {
 	 */
 	constructor () {
 		super()
-
-		/**
-		 * Holds paginator instances
-		 * @type {Object}
-		 */
-		this.paginator = {}
 	}
 
 	/*eslint spaced-comment:0*/
-	////////////////
-	// PAGINATION //
-	////////////////
-
-	/**
-	 * Create a paginator.
-	 */
-	paginate (id, ref, limit = 6) {
-		this.paginator[id] = new Paginator(ref, limit)
-	}
-
-	/**
-	 * Get paginator results.
-	 * @param {String} id 		The paginator ID.
-	 * @param {String} type 	Page type ('prevPage' or 'nextPage')
-	 * @return {Array} 			The results.
-	 */
-	getPaginatorResults (id, type) {
-		this.emit('serviceLoading')
-		let page
-		try {
-			page = this.paginator[id][type]()
-		}
-		catch (e) {
-			this.emit('serviceError', e)
-			return Promise.reject(e)
-		}
-		if (!page) {
-			return Promise.resolve([])
-		}
-		return this.get(page.ref).then((snapshot) => {
-			this.emit('serviceLoading')
-			return page.cb(snapshot)
-		})
-	}
-
-	/**
-	 * Get paginator results call function.
-	 * @param {String} id 	The paginator ID.
-	 * @return {Array} 		The results.
-	 */
-	getPaginatorResultsCall (id) {
-		let inst = this[camelCase(`get-paginator-${ id }`)]
-		if (typeof inst !== 'function') {
-			return false
-		}
-		return inst.bind(this)
-	}
-
-	/**
-	 * Get paginator results for the next page.
-	 * @param {String} id 	The paginator ID.
-	 * @return {Array} 		The results.
-	 */
-	nextPage (id) {
-		const args = [].slice.call(arguments, 1)
-		const inst = this.getPaginatorResultsCall(id)
-		if (!inst) {
-			return Promise.reject(`invalid paginator results call ${ id }`)
-		}
-		return inst.apply(inst, ['nextPage'].concat(args))
-	}
-
-	/**
-	 * Get paginator results for the previous page.
-	 * @param {String} id 	The paginator ID.
-	 * @return {Array} 		The results.
-	 */
-	prevPage (id) {
-		const inst = this.getPaginatorResultsCall(id)
-		if (!inst) {
-			return Promise.reject(`invalid paginator results call ${ id }`)
-		}
-		return inst('prevPage')
-	}
-
 	//////////////
 	// PACKAGES //
 	//////////////
@@ -387,6 +304,8 @@ class Store extends FirebaseStore {
 			this.setPackageVersionReadme(packageVersionId, null),
 			// Package version components
 			this.removePackageVersionComponents(packageVersionId),
+			// Package pages
+			this.removePackageVersionPages(packageVersionId),
 			// Package version ID
 			this.removePackageVersionId(packageVersionId)
 		])
@@ -1575,134 +1494,495 @@ class Store extends FirebaseStore {
 	// PAGES //
 	///////////
 	
-	getPageRef (pageId, version) {
-		return this.getRef(`pages/${ pageId }/${ this.version(version) }`)
-	}
-	
 	/**
-	 * Saves a page to Firebase.
-	 * @param  {String} pageId 		The page ID.
-	 * @param  {?} data 			The page data.
-	 * @param  {String} version 	The package version.
-	 * @return {Promise} 			A Promise.
+	 * Get a Firebase reference to page IDs
+	 * @param  {String} pageId 		The page ID (optional)
+	 * @return {Firebase}        	A Firebase reference
 	 */
-	setPage (pageId, data, version) {
-		version = this.version(version)
-		let ref = this.getRef('pages')
+	getRefPageId (pageId) {
+		const ref = this.getRef('page_id')
+		if (pageId) {
+			return ref.child(pageId)
+		}
+		return ref
+	}
+
+	/**
+	 * Get a Firebase reference to page version data
+	 * @param  {String} pageVersionId 	The page version ID
+	 * @return {Firebase}               A Firebase reference
+	 */
+	getRefPageVersionData (pageVersionId) {
+		return this.getRef(`page_version_data/${ pageVersionId }`)
+	}
+
+	/**
+	 * Get a Firebase reference for package version page IDs, by package version ID and page ID
+	 * @param  {String} packageVersionId 	The package version ID
+	 * @param  {String} pageId           	The page ID
+	 * @return {Firebase}                  	A Firebase reference
+	 */
+	getRefPackageVersionPageId (packageVersionId, pageId) {
+		const ref = this.getRef(`package_version_page_id/${ packageVersionId }`)
+		if (pageId) {
+			return ref.child(pageId)
+		}
+		return ref
+	}
+
+	/**
+	 * Get a Firebase reference for page IDs by package version ID
+	 * @param  {String} packageVersionId    The package version ID
+	 * @param  {String} pageId 				The page ID
+	 * @return {Firebase}                   A Firebase reference
+	 */
+	getRefPageIdByPackageVersionId (packageVersionId, pageId) {
+		return this.getRef(`page_id_by_package_version_id/${ packageVersionId }/${ pageId }`)
+	}
+
+	/**
+	 * Get a Firebase reference for package version IDs by page ID
+	 * @param  {String} pageId 				The page ID
+	 * @param  {String} packageVersionId    The package version ID (optional)
+	 * @return {Firebase}                   A Firebase reference
+	 */
+	getRefPackageVersionIdbyPageId (pageId, packageVersionId) {
+		const ref = this.getRef(`package_version_id_by_page_id/${ pageId }`)
+		if (packageVersionId) {
+			return ref.child(packageVersionId)
+		}
+		return ref
+	}
+
+	/**
+	 * Get a Firebase reference to package version page ID data
+	 * @param  {String} packageVersionPageId 	The package version page ID
+	 * @return {Firebase}                      	A Firebase reference
+	 */
+	getRefPackageVersionPageIdData (packageVersionPageId) {
+		return this.getRef(`package_version_page_id_data/${ packageVersionPageId }`)
+	}
+
+	/**
+	 * Get a Firebase reference to package page version IDs by page ID
+	 * @param  {String} pageId               	The page ID
+	 * @param  {String} packageVersionPageId 	The package version page ID
+	 * @return {Firebase}                      	A Firebase reference
+	 */
+	getRefPackagePageVersion (pageId, packageVersionPageId) {
+		const ref = this.getRef(`package_page_version/${ pageId }`)
+		if (packageVersionPageId) {
+			return ref.child(packageVersionPageId)
+		}
+		return ref
+	}
+
+	/**
+	 * Get a Firebase reference to package page version IDs with content data, by page ID
+	 * @param  {String} pageId               	The page ID
+	 * @param  {String} packageVersionPageId 	The package version page ID (optional)
+	 * @return {Firebase}                      	A Firebase reference
+	 */
+	getRefPackagePageVersionContent (pageId, packageVersionPageId) {
+		const ref = this.getRef(`package_page_version_content/${ pageId }`)
+		if (packageVersionPageId) {
+			return ref.child(packageVersionPageId)
+		}
+		return ref
+	}
+
+	/**
+	 * Get a Firebase reference to page IDs, by package ID
+	 * @param  {String} packageId 	The package ID
+	 * @param  {String} pageId    	The page ID (optional)
+	 * @return {Firebase}           A Firebase reference
+	 */
+	getRefPackagePage (packageId, pageId) {
+		let ref = this.getRef('package_page')
+		if (packageId) {
+			ref = ref.child(packageId)
+		}
 		if (pageId) {
 			ref = ref.child(pageId)
 		}
-		else {
-			ref = ref.push()
-			pageId = ref.key()
+		return ref
+	}
+
+	/**
+	 * Create a unique page ID
+	 * @return {Promise} A Promise
+	 */
+	setPageId () {
+		return this.set(this.getRefPageId().push(), true)
+	}
+
+	/**
+	 * Create or update page version data
+	 * @param {String} pageVersionId 	The page version ID
+	 * @param {Promise} data          	A Promise
+	 */
+	setPageVersion (pageVersionId, data) {
+		return this.set(this.getRefPageVersionData(pageVersionId), data)
+	}
+
+	/**
+	 * Get page version data
+	 * @param  {String} pageVersionId 	The page version ID
+	 * @return {Promise}               	A Promise
+	 */
+	getPageVersion (pageVersionId) {
+		return this.get(this.getRefPageVersionData(pageVersionId)).then((snapshot) => snapshot.val())
+	}
+
+	/**
+	 * Remove page version data
+	 * @param  {String} pageVersionId 	The page version ID
+	 * @return {Promise}               	A Promise
+	 */
+	removePageVersion (pageVersionId) {
+		return this.remove(this.getRefPageVersionData(pageVersionId))
+	}
+
+	/**
+	 * Fetch package version page ID, by package version ID and page ID
+	 * @param  {String} packageVersionId 	The package version ID
+	 * @param  {String} pageId           	The page ID
+	 * @return {Promise}                  	A Promise
+	 */
+	getPackageVersionPageId (packageVersionId, pageId) {
+		return this.get(this.getRefPackageVersionPageId(packageVersionId, pageId)).then((snapshot) => snapshot.val())
+	}
+
+	/**
+	 * Fetch package version page ID data
+	 * @param  {String} packageVersionPageId 	The package version page ID
+	 * @return {Promise}                      	A Promise
+	 */
+	getPackageVersionPageIdData (packageVersionPageId) {
+		return this.get(this.getRefPackageVersionPageIdData(packageVersionPageId)).then((snapshot) => snapshot.val())
+	}
+
+	/**
+	 * Create a unique package version page ID, by package version ID and page ID
+	 * @param  {String}  packageVersionId 	The package version ID
+	 * @param  {String}  pageId           	The page ID
+	 * @return {Promise} 					A Promise
+	 */
+	setPackageVersionPageId (packageVersionId, pageId) {
+		const ref = this.getRefPackageVersionPageId(packageVersionId, pageId)
+		const packageVersionPageId = ref.push().key()
+		const data = {
+			packageVersionId,
+			pageId
 		}
-		ref = ref.child(version)
-		return this.set(ref, data, pageId)
+		return Promise.all([
+			// Package version page ID
+			this.set(ref, packageVersionPageId),
+			// Package version page ID data
+			this.set(this.getRefPackageVersionPageIdData(packageVersionPageId), data),
+			// Package version page IDs by page ID
+			this.set(this.getRefPackagePageVersion(pageId, packageVersionPageId), true),
+			// Package version <> Page
+			this.setPackageVersionPageRelationship(packageVersionId, pageId),
+			// Page IDs by package ID
+			this.getPackageVersionIdData(packageVersionId).then((packageVersionIdData) => {
+				return this.set(this.getRefPackagePage(packageVersionIdData.packageId, pageId), true)
+			})
+		])
+		.then(() => packageVersionPageId)
 	}
 
 	/**
-	 * Removes a page from Firebase.
-	 * @param  {String} pageId 		The page ID.
-	 * @param  {String} version 	The package version.
-	 * @return {Promise} 			A Promise.
+	 * Remove a package version page ID
+	 * @param  {String} packageVersionPageId 	The package version page ID
+	 * @return {Promise}                      	A Promise
 	 */
-	removePage (pageId, version) {
-		return this.remove(this.getPageRef(pageId, version), pageId)
+	removePackageVersionPageId (packageVersionPageId) {
+		return this.getPackageVersionPageIdData(packageVersionPageId).then((packageVersionPageIdData) => {
+			return Promise.all([
+				// Package version page ID
+				this.remove(this.getRefPackageVersionPageId(packageVersionPageIdData.packageVersionId, packageVersionPageIdData.pageId)),
+				// Package version page ID data
+				this.remove(this.getRefPackageVersionPageIdData(packageVersionPageId)),
+				// Package version page IDs by page ID
+				this.remove(this.getRefPackagePageVersion(packageVersionPageIdData.pageId, packageVersionPageId)),
+				// Package version <> Page
+				this.removePackageVersionPageRelationship(packageVersionPageIdData.packageVersionId, packageVersionPageIdData.pageId)
+			])
+			.then(() => {
+				// Package version page IDs by page ID
+				return this.get(this.getRefPackagePageVersion(packageVersionPageIdData.pageId)).then((snapshot) => {
+					if (!snapshot.exists()) {
+						return Promise.all([
+							// Page ID
+							this.remove(this.getRefPageId(packageVersionPageIdData.pageId)),
+							// Page IDs by package ID
+							// Package version page IDs by page ID
+							this.getPackageVersionIdData(packageVersionPageIdData.packageVersionId).then((packageVersionIdData) => {
+								return this.remove(this.getRefPackagePage(packageVersionIdData.packageId, packageVersionPageIdData.pageId))
+							})
+						])
+					}
+				})
+			})
+		})
 	}
-
+	
 	/**
-	 * Get a page from Firebase.
-	 * @param  {String} pageId 		The page ID.
-	 * @param  {String} version 	The package version.
-	 * @return {Promise} 			A Promise which resolves a page Object.
+	 * Create or update a package version page, by package version ID and page ID
+	 * @param {String} packageVersionId 	The package version ID
+	 * @param {String} pageId           	The page ID
+	 * @param {Promise} data             	A Promise
 	 */
-	getPage (pageId, version) {
-		return this.get(this.getPageRef(pageId, version)).then((snapshot) => {
-			return snapshot.val()
+	setPackagePage (packageVersionId, pageId, data) {
+		// Page ID
+		return Promise.resolve(pageId).then((id) => id ? id : this.setPageId()).then((id) => {
+			pageId = id
+
+			// Package version page ID
+			return this.getPackageVersionPageId(packageVersionId, pageId).then((packageVersionPageId) => {
+				return !packageVersionPageId ? this.setPackageVersionPageId(packageVersionId, pageId) : packageVersionPageId
+			})
+		})
+		.then((packageVersionPageId) => {
+			return Promise.all([
+				// Package version page data
+				this.setPageVersion(packageVersionPageId, data),
+				// Package version page IDs with content data, by page ID
+				this.set(this.getRefPackagePageVersionContent(pageId, packageVersionPageId), true)
+			])
+			.then(() => pageId)
 		})
 	}
 
 	/**
-	 * Get a Firebase query reference for fetching pages for a specific package.
-	 * @param  {String} packageId		The package ID.
-	 * @param  {String} version 		The package version.
-	 * @return {Firebase} 				A Firebase reference.
+	 * Remove a package version page
+	 * @return {Promise} A Promise
 	 */
-	getPackagePagesRef (packageId, version) {
-		return this.getRef(`package_pages/${ packageId }/${ this.version(version) }`)
-	}
-
-	/**
-	 * Create a Pages paginator
-	 * @param  {String} packageId 	The package ID.
-	 * @param  {String} version 	The package version.
-	 */
-	paginatePages (packageId, version) {
-		this.paginate('pages', this.getPackagePagesRef(packageId, version))
-	}
-
-	/**
-	 * Get 'Pages' paginator results.
-	 * @param {String} type 	Page type ('prevPage' or 'nextPage')
-	 * @return {Array} 			The results.
-	 */
-	getPaginatorPages (type, version) {
-		return this.getPaginatorResults('pages', type).then((pageIds) => {
-			pageIds = Object.keys(pageIds)
-			return Promise.all(pageIds.map((pageId) => this.getPage(pageId, version)))
+	removePackagePage (packageVersionPageId) {
+		return this.getPackageVersionPageIdData(packageVersionPageId).then((data) => {
+			return Promise.all([
+				// Package version page data
+				this.removePageVersion(packageVersionPageId),
+				// Package version page IDs with content data, by page ID
+				this.remove(this.getRefPackagePageVersionContent(data.pageId, packageVersionPageId)),
+				// Package version page ID
+				this.removePackageVersionPageId(packageVersionPageId)
+			])
 		})
 	}
 
 	/**
-	 * Get pages from Firebase for a specific package.
-	 * @param {String} packageId 	The package ID.
-	 * @param  {String} version 	The package version.
-	 * @return {Promise} 			A Promise which resolves a pages Array.
+	 * Fetch a page by package version ID and page ID
+	 * @return {Promise} A Promise
 	 */
-	getPages (packageId, version) {
-		return this.get(this.getPackagePagesRef(packageId, version)).then((snapshot) => {
-			let pageIds = Object.keys(snapshot.val())
-			return Promise.all(pageIds.map((pageId) => this.getPage(pageId, version)))
+	getPackagePage (packageName, version, pageId) {
+		// Package ID
+		return this.getPackageId(packageName).then((packageId) => {
+			// Package version ID
+			return this.getPackageVersionId(packageId, version).then((packageVersionId) => {
+				// Package version page ID
+				return this.getPackageVersionPageId(packageVersionId, pageId).then((id) => {
+					// Package version page data
+					return id ? this.getPackagePageVersionById(id) : null
+				})
+			})
+		})
+		.then((data) => {
+			// Latest package version page ID with content data
+			if (!data) {
+				return this.getLatestPackagePage(pageId)
+			}
+			return data
 		})
 	}
 
 	/**
-	 * Remove pages from Firebase for a specific package.
-	 * @param {String} packageId 	The package ID.
-	 * @param  {String} version 	The package version.
-	 * @return {Promise} 			A Promise.
+	 * Set package version <> Page two-way relationship
+	 * @param  {String} packageVersionId 	The package version ID
+	 * @param  {String} pageId           	The page ID
+	 * @return {Promise} 					A Promise
 	 */
-	removePages (packageId, version) {
-		return this.get(this.getPackagePagesRef(packageId, version)).then((snapshot) => {
-			let pageIds = Object.keys(snapshot.val())
-			return Promise.all(pageIds.map((pageId) => this.removePage(pageId, version)))
+	setPackageVersionPageRelationship (packageVersionId, pageId) {
+		return Promise.all([
+			// Page ID by package version ID
+			this.set(this.getRefPageIdByPackageVersionId(packageVersionId, pageId), true),
+			// Package version ID by page ID
+			this.set(this.getRefPackageVersionIdbyPageId(pageId, packageVersionId), true)
+		])
+	}
+
+	/**
+	 * Remove package version <> Page two-way relationship
+	 * @param  {String} packageVersionId 	The package version ID
+	 * @param  {String} pageId           	The page ID
+	 * @return {Promise} 					A Promise
+	 */
+	removePackageVersionPageRelationship (packageVersionId, pageId) {
+		return Promise.all([
+			// Page ID by package version ID
+			this.remove(this.getRefPageIdByPackageVersionId(packageVersionId, pageId)),
+			// Package version ID by page ID
+			this.remove(this.getRefPackageVersionIdbyPageId(pageId, packageVersionId))
+		])
+	}
+
+	/**
+	 * Toggle package version <> Page two-way relationship, by package name and version
+	 * @param  {String} packageName 	The package name
+	 * @param  {String} version     	The package version
+	 * @param  {String} pageId      	The page ID
+	 * @return {Promise}             	A Promise
+	 */
+	togglePackageVersionPage (packageName, version, pageId) {
+		// Package ID
+		return this.getPackageId(packageName).then((packageId) => {
+			// Package version ID
+			return this.getPackageVersionId(packageId, version).then((packageVersionId) => {
+				// Page ID by package version ID
+				return this.get(this.getRefPageIdByPackageVersionId(packageVersionId, pageId)).then((snapshot) => {
+					// Remove relationship
+					if (snapshot.exists()) {
+						return this.removePackageVersionPageRelationship(packageVersionId, pageId)
+					}
+					// Set relationship
+					return this.setPackageVersionPageRelationship(packageVersionId, pageId)
+				})
+				// Fetch updated page version
+				.then(() => {
+					return this.getPackagePage(packageName, version, pageId)
+				})
+			})
 		})
 	}
 
 	/**
-	 * Package pages relationship
-	 * @param {String} packageId   	The package ID.
-	 * @param {String} pageId 		The page ID.
-	 * @param {Boolean|null} data 	The data (Boolean or null to remove)
+	 * Fetch the latest package page version by page ID
+	 * @param  {String} pageId 	The page ID
+	 * @return {Promise}        A Promise
 	 */
-	setPackagePage (packageId, version, pageId, data) {
-		return this.set(this.getPackagePagesRef(packageId, version).child(pageId), data)
+	getLatestPackagePage (pageId) {
+		return this.get(this.getRefPackagePageVersionContent(pageId)).then((snapshot) => {
+			if (snapshot.exists()) {
+				const latestPackageVersionPageId = Object.keys(snapshot.val()).pop()
+				return this.getPackagePageVersionById(latestPackageVersionPageId)
+			}
+			return null
+		})
 	}
 
 	/**
-	 * Remove Package <> Page relationship
-	 * @param {String} packageId   	The package ID.
-	 * @param  {String} version 	The package version.
-	 * @param {String} pageId 		The page ID.
+	 * Fetch a page by package version page ID
+	 * @return {Promise} A Promise
 	 */
-	removePackagePage (packageId, version, pageId) {
-		return this.remove(this.getPackagePagesRef(packageId, version).child(pageId))
+	getPackagePageVersionById (packageVersionPageId) {
+		return Promise.all([
+			// Page version data
+			this.getPageVersion(packageVersionPageId),
+			// Package version page ID data
+			this.getPackageVersionPageIdData(packageVersionPageId)
+		])
+		.then(([data, packageVersionPageIdData]) => {
+			// Package version ID data
+			return this.getPackageVersionIdData(packageVersionPageIdData.packageVersionId).then((packageVersionIdData) => {
+				return { data, packageVersionPageIdData, packageVersionIdData }
+			})
+		})
+		.then((data) => {
+			return this.get(this.getRefPackageVersionIdbyPageId(data.packageVersionPageIdData.pageId)).then((snapshot) => {
+				return merge(data, { packageVersionId: snapshot.exists() ? Object.keys(snapshot.val()) : [] })
+			})
+		})
 	}
 
-	onPageRemoved (cb, error) {
-		this.listen('pages', 'child_removed', (snapshot) => {
-			cb(snapshot.key())
+	/**
+	 * Fetch package version page IDs by package version ID
+	 * @param  {String} packageVersionId 	The package version ID
+	 * @return {Promise}                  	A Promise
+	 */
+	getPackageVersionPageIds (packageVersionId) {
+		return this.get(this.getRefPackageVersionPageId(packageVersionId)).then((snapshot) => this.snapshotArray(snapshot))
+	}
+
+	/**
+	 * Fetch package version pages
+	 * @return {Promise} A Promise which resolves a pages Array
+	 */
+	getPackageVersionPages (packageVersionId) {
+		return this.getPackageVersionPageIds(packageVersionId).then((ids) => Promise.all(ids.map((id) => this.getPackagePageVersionById(id))))
+	}
+
+	/**
+	 * Fetch package version pages, by package name and version
+	 * @param  {String} packageName 	The package name
+	 * @param  {String} version     	The package version
+	 * @return {Promise}             	A Promise
+	 */
+	getPackageVersionPagesByName (packageName, version) {
+		// Package ID
+		return this.getPackageId(packageName).then((packageId) => {
+			// Package version ID
+			return this.getPackageVersionId(packageId, version).then((packageVersionId) => {
+				// Pages
+				return this.getPackageVersionPages(packageVersionId)
+			})
+		})
+	}
+
+	/**
+	 * Fetch package pages by package name
+	 * @param  {String} packageName 	The package name
+	 * @return {Promise}             	A Promise
+	 */
+	getPackagePagesByName (packageName, version) {
+		// Package ID
+		return this.getPackageId(packageName).then((packageId) => {
+			// Page IDs by package ID
+			return this.get(this.getRefPackagePage(packageId)).then((snapshot) => {
+				const pageIds = Object.keys(snapshot.val() || {})
+				return Promise.all(pageIds.map((pid) => this.getPackagePage(packageName, version, pid)))
+			})
+		})
+	}
+
+	/**
+	 * Remove package version pages
+	 * @param {String} packageVersionId 	The package version ID
+	 * @return {Promise} 					A Promise
+	 */
+	removePackageVersionPages (packageVersionId) {
+		return this.getPackageVersionPageIds(packageVersionId).then((ids) => Promise.all(ids.map((id) => this.removePackagePage(id))))
+	}
+
+	//////////////////////////////
+	// PACKAGE PAGES: LISTENERS //
+	//////////////////////////////
+
+	onPackagePageAdded (packageName, version, cb, error) {
+		// Package ID
+		this.getPackageId(packageName).then((packageId) => {
+			// Page IDs by package ID
+			this.listen(this.getRefPackagePage(packageId), 'child_added', (snapshot) => {
+				this.getPackagePage(packageName, version, snapshot.key()).then((data) => cb(data))
+			}, error)
+		})
+	}
+
+	offPackagePageAdded () {
+		this.getRefPackagePage().off('child_added')
+	}
+
+	onPackageVersionPageRemoved (cb, error) {
+		this.listen('package_version_page_id', 'child_removed', (snapshot) => {
+			const val = snapshot.val()
+			const pageId = Object.keys(val).pop()
+			const packageVersionPageId = val[pageId]
+			cb(packageVersionPageId)
 		}, error)
+	}
+
+	offPackageVersionPageRemoved () {
+		this.getRef('package_version_page_id').off('child_removed')
 	}
 }
 
