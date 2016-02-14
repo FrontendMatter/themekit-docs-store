@@ -3,6 +3,7 @@ import merge from 'mout/object/merge'
 import forOwn from 'mout/object/forOwn'
 import camelCase from 'mout/string/camelCase'
 import slugify from 'mout/string/slugify'
+import Firebase from 'firebase'
 
 /**
  * ThemeKit Docs App Firebase Store.
@@ -117,6 +118,19 @@ class Store extends FirebaseStore {
 		const ref = this.getRef(`package_readme/${ packageId }`)
 		if (packageVersionId) {
 			return ref.child(packageVersionId)
+		}
+		return ref
+	}
+
+	/**
+	 * Get a Firebase reference for package version data
+	 * @param  {String} packageVersionId 	The package version ID (optional)
+	 * @return {Firebase}                  	A Firebase reference
+	 */
+	getRefPackageVersionData (packageVersionId) {
+		let ref = this.getRef('package_version_data')
+		if (packageVersionId) {
+			ref = ref.child(packageVersionId)
 		}
 		return ref
 	}
@@ -281,13 +295,18 @@ class Store extends FirebaseStore {
 				return packageVersionId
 			})
 		})
-		// Package version description
 		.then((packageVersionId) => {
-			return this.setPackageVersionDescription(packageVersionId, description).then(() => packageVersionId)
+			return Promise.all([
+				// Package version description
+				this.setPackageVersionDescription(packageVersionId, description),
+				// Package version readme
+				this.setPackageVersionReadme(packageVersionId, readme),
+			])
+			.then(() => packageVersionId)
 		})
-		// Package version readme
+		// Package version data
 		.then((packageVersionId) => {
-			return this.setPackageVersionReadme(packageVersionId, readme).then(() => packageVersionId)
+			return this.set(this.getRefPackageVersionData(packageVersionId), { updated: Firebase.ServerValue.TIMESTAMP }).then(() => packageVersionId)
 		})
 	}
 
@@ -309,6 +328,9 @@ class Store extends FirebaseStore {
 			// Package version ID
 			this.removePackageVersionId(packageVersionId)
 		])
+		.then(() => {
+			return this.remove(this.getRefPackageVersionData(packageVersionId))
+		})
 	}
 
 	/**
@@ -535,26 +557,67 @@ class Store extends FirebaseStore {
 		return this.getPackageVersionIds(packageId).then((ids) => Promise.all(ids.map((id) => this.getPackageVersionIdData(id))))
 	}
 
+	///////////////////////
+	// PACKAGE LISTENERS //
+	///////////////////////
+
 	/**
-	 * Listen for child_added events on package IDs
+	 * Listen for child_added events on package version data
+	 * Fetches the latest package version
 	 * @param  {Function} cb    The complete callback
 	 * @param  {Function} error The error callback
 	 */
 	onPackageAdded (cb, error) {
-		this.listen('package_id', 'child_added', (snapshot) => {
-			const packageId = snapshot.val()
-
-			// Latest package version ID
-			this.getLatestPackageVersionId(packageId)
-			// Package version
-			.then((latestPackageVersionId) => this.getPackageVersion(latestPackageVersionId))
-			// Complete callback
-			.then((data) => cb(data))
+		this.listen(this.getRefPackageVersionData(), 'child_added', (snapshot) => {
+			const packageVersionId = snapshot.key()
+			this.getPackageVersionIdData(packageVersionId).then((packageVersionIdData) => {
+				// Latest package version ID
+				this.getLatestPackageVersionId(packageVersionIdData.packageId).then((latestPackageVersionId) => {
+					// Package version
+					this.getPackageVersion(latestPackageVersionId)
+					// Complete callback
+					.then((data) => cb(data))
+				})
+			})
 		}, error)
 	}
 
+	/**
+	 * Callback for child_added, child_changed event listeners on package version data
+	 * @param  {Function} cb       The complete callback
+	 * @param  {Object}   snapshot A Firebase snapshot
+	 */
+	onPackageVersionUpdateCb (cb, snapshot) {
+		this.getPackageVersion(snapshot.key()).then((data) => cb(data))
+	}
+
+	/**
+	 * Listen for child_added events on package version data
+	 * Fetches the package version
+	 * @param  {Function} cb    	The complete callback
+	 * @param  {Function} error 	The error callback
+	 */
+	onPackageVersionAdded (cb, error) {
+		this.listen(this.getRefPackageVersionData(), 'child_added', this.onPackageVersionUpdateCb.bind(this, cb), error)
+	}
+
+	/**
+	 * Listen for child_changes events on package version data
+	 * Fetches the package version
+	 * @param  {Function} cb    	The complete callback
+	 * @param  {Function} error 	The error callback
+	 */
+	onPackageVersionChanged (cb, error) {
+		this.listen(this.getRefPackageVersionData(), 'child_changed', this.onPackageVersionUpdateCb.bind(this, cb), error)
+	}
+
+	/**
+	 * Listen for child_removed events on package version data
+	 * @param  {Function} cb    	The complete callback
+	 * @param  {Function} error 	The error callback
+	 */
 	onPackageVersionRemoved (cb, error) {
-		this.listen('package_version_id_data', 'child_removed', (snapshot) => cb(snapshot.key()), error)
+		this.listen(this.getRefPackageVersionData(), 'child_removed', (snapshot) => cb(snapshot.key()), error)
 	}
 
 	////////////////
@@ -600,16 +663,24 @@ class Store extends FirebaseStore {
 	 * @return {Firebase}                    	A Firebase reference
 	 */
 	getRefComponentVersionIdData (componentVersionId) {
-		return this.getRef(`component_version_id_data/${ componentVersionId }`)
+		let ref = this.getRef('component_version_id_data')
+		if (componentVersionId) {
+			ref = ref.child(componentVersionId)
+		}
+		return ref
 	}
 
 	/**
 	 * Get a Firebase reference for component version data
-	 * @param  {String} componentVersionId 		The component version ID
+	 * @param  {String} componentVersionId 		The component version ID (optional)
 	 * @return {Firebase}                    	A Firebase reference
 	 */
 	getRefComponentVersionData (componentVersionId) {
-		return this.getRef(`component_version_data/${ componentVersionId }`)
+		let ref = this.getRef('component_version_data')
+		if (componentVersionId) {
+			ref = ref.child(componentVersionId)
+		}
+		return ref
 	}
 
 	/**
@@ -802,13 +873,14 @@ class Store extends FirebaseStore {
 				return componentVersionId
 			})
 		})
-		// Component version data
-		.then((componentVersionId) => {
-			return this.set(this.getRefComponentVersionData(componentVersionId), data).then(() => componentVersionId)
-		})
 		// Package version description
 		.then((componentVersionId) => {
 			return this.setComponentVersionDescription(componentVersionId, description).then(() => componentVersionId)
+		})
+		// Component version data
+		.then((componentVersionId) => {
+			data.updated = Firebase.ServerValue.TIMESTAMP
+			return this.set(this.getRefComponentVersionData(componentVersionId), data).then(() => componentVersionId)
 		})
 	}
 
@@ -1018,6 +1090,10 @@ class Store extends FirebaseStore {
 		return this.getPackageVersionComponentIds(packageVersionId).then((ids) => Promise.all(ids.map((id) => this.removeComponentVersion(id))))
 	}
 
+	/////////////////////////
+	// COMPONENT LISTENERS //
+	/////////////////////////
+
 	/**
 	 * Listen for child_added events on package version components
 	 * @param  {String}   packageVersionId The package version ID
@@ -1038,13 +1114,32 @@ class Store extends FirebaseStore {
 		this.getRefComponentVersionId(packageVersionId).off('child_added')
 	}
 
+	onComponentVersionUpdateCb (cb, snapshot) {
+		this.getComponentVersionById(snapshot.key()).then((data) => cb(data))
+	}
+
+	onComponentVersionAdded (cb, error) {
+		this.listen(this.getRefComponentVersionData(), 'child_added', this.onComponentVersionUpdateCb.bind(this, cb), error)
+	}
+
+	onComponentVersionChanged (cb, error) {
+		this.listen(this.getRefComponentVersionData(), 'child_changed', this.onComponentVersionUpdateCb.bind(this, cb), error)
+	}
+
 	/**
 	 * Listen for child_removed events on component version IDs
 	 * @param  {Function} cb    The complete callback
 	 * @param  {Function} error The error callback
 	 */
 	onComponentVersionRemoved (cb, error) {
-		this.listen('component_version_id_data', 'child_removed', (snapshot) => cb(snapshot.key()), error)
+		this.listen(this.getRefComponentVersionIdData(), 'child_removed', (snapshot) => cb(snapshot.key()), error)
+	}
+
+	/**
+	 * Remove child_removed listener on component version IDs
+	 */
+	offComponentVersionRemoved () {
+		this.getRefComponentVersionIdData().off('child_removed')
 	}
 
 	/////////////////////
